@@ -48,11 +48,16 @@ export const env = {
   },
   /**
    * Conexão do PostgreSQL. Na Vercel o Postgres gerenciado injeta
-   * `POSTGRES_PRISMA_URL` / `POSTGRES_URL_NON_POOLING` automaticamente.
+   * `POSTGRES_URL_NON_POOLING` (conexão direta) e `POSTGRES_PRISMA_URL`
+   * (pooled, via pgbouncer).
+   *
+   * A ordem importa: a versão com pool usa pgbouncer em modo transação, que
+   * não sustenta `BEGIN/COMMIT` no mesmo cliente. Como o registro de
+   *.quiz usa transação explícita, a conexão direta é preferida.
    */
   databaseUrl: readEnv(
     'DATABASE_URL',
-    readEnv('POSTGRES_PRISMA_URL', readEnv('POSTGRES_URL_NON_POOLING', readEnv('POSTGRES_URL', ''))),
+    readEnv('POSTGRES_URL_NON_POOLING', readEnv('POSTGRES_PRISMA_URL', readEnv('POSTGRES_URL', ''))),
   ),
   seed: {
     adminEmail: readEnv('SEED_ADMIN_EMAIL', 'admin@tseibra.local'),
