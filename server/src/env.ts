@@ -67,6 +67,17 @@ export const env = {
   },
 } as const;
 
+/** Erro de configuração; a função serverless o converte em resposta legível. */
+export class ConfigurationError extends Error {
+  readonly status = 503;
+  readonly code = 'service_misconfigured';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConfigurationError';
+  }
+}
+
 export function assertProductionSecrets(): void {
   if (!isProduction) return;
   if (!env.jwt.secret || env.jwt.secret === 'dev-secret-troque-em-producao') {

@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { assertProductionSecrets, env } from '../env.js';
+import { assertProductionSecrets, ConfigurationError, env } from '../env.js';
 import { createPgDb, type Db } from './query.js';
 
 /**
@@ -118,8 +118,8 @@ export async function ensureSchema(): Promise<void> {
 export function assertDatabaseConfigured(): void {
   assertProductionSecrets();
   if (!env.databaseUrl) {
-    throw new Error(
-      'DATABASE_URL não configurada. Defina a conexão do PostgreSQL (Vercel injeta automaticamente para o Postgres gerenciado).',
+    throw new ConfigurationError(
+      'DATABASE_URL não configurada. Crie um Postgres no painel da Vercel (Storage) e conecte-o ao projeto.',
     );
   }
 }
