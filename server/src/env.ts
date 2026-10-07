@@ -1,11 +1,26 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const here = dirname(fileURLToPath(import.meta.url));
+/**
+ * Diretório do arquivo em execução.
+ *
+ * `import.meta.url` não existe quando o bundle é gerado em CommonJS (o que
+ * pode ocorrer no build serverless), então há um fallback para o cwd. Um
+ * caminho incorreto aqui apenas desativa o serviço de arquivos estáticos —
+ * que, na Vercel, é feito pela CDN de qualquer forma.
+ */
+function currentDir(): string {
+  const meta = import.meta as ImportMeta | undefined;
+  if (meta && typeof meta.url === 'string' && meta.url.length > 0) {
+    return dirname(fileURLToPath(meta.url));
+  }
+  return process.cwd();
+}
 
-/** Raiz do repositório (server/ -> ../) */
+const here = currentDir();
+
+/** Raiz do repositório (server/src -> ../..) */
 export const ROOT_DIR = resolve(here, '..', '..');
 
 function readEnv(key: string, fallback: string): string {
@@ -15,12 +30,12 @@ function readEnv(key: string, fallback: string): string {
 
 const NODE_ENV = readEnv('NODE_ENV', 'development');
 const isProduction = NODE_ENV === 'production';
-
-const dataDir = resolve(ROOT_DIR, readEnv('DATA_DIR', 'server/data'));
+const isTest = NODE_ENV === 'test';
 
 export const env = {
   NODE_ENV,
   isProduction,
+  isTest,
   port: Number.parseInt(readEnv('PORT', '4000'), 10),
   /** URL pública do front (usada para CORS em desenvolvimento) */
   webOrigin: readEnv('WEB_ORIGIN', 'http://localhost:5173'),
@@ -31,9 +46,14 @@ export const env = {
     expiresInSeconds: Number.parseInt(readEnv('JWT_EXPIRES_IN', '28800'), 10),
     issuer: 'tseibra-plataforma',
   },
-  databaseFile: resolve(dataDir, 'tseibra.sqlite'),
-  dataDir,
-  /** Credenciais criadas pelo seed inicial */
+  /**
+   * Conexão do PostgreSQL. Na Vercel o Postgres gerenciado injeta
+   * `POSTGRES_PRISMA_URL` / `POSTGRES_URL_NON_POOLING` automaticamente.
+   */
+  databaseUrl: readEnv(
+    'DATABASE_URL',
+    readEnv('POSTGRES_PRISMA_URL', readEnv('POSTGRES_URL_NON_POOLING', readEnv('POSTGRES_URL', ''))),
+  ),
   seed: {
     adminEmail: readEnv('SEED_ADMIN_EMAIL', 'admin@tseibra.local'),
     adminPassword: readEnv('SEED_ADMIN_PASSWORD', 'Admin@123'),
@@ -49,12 +69,16 @@ export function assertProductionSecrets(): void {
   }
 }
 
-export function ensureDataDir(): void {
-  if (!existsSync(env.dataDir)) {
-    mkdirSync(env.dataDir, { recursive: true });
-  }
-}
-
 export function newIdempotencySalt(): string {
   return randomBytes(16).toString('hex');
+}
+
+/** Coleta os headers de proxy confiáveis (Vercel, Cloudflare, nginx). */
+export function clientIpFrom(headers: Record<string, unknown>): string | undefined {
+  const forwarded = headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.length > 0) {
+    return forwarded.split(',')[0]?.trim();
+  }
+  const real = headers['x-real-ip'];
+  return typeof real === 'string' ? real : undefined;
 }

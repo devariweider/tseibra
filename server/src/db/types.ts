@@ -9,7 +9,7 @@ export interface UserRow {
   password_hash: string;
   role: Role;
   organization: string | null;
-  active: number;
+  active: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -71,7 +71,7 @@ export function toPublicUser(row: UserRow): PublicUser {
     email: row.email,
     role: row.role,
     organization: row.organization,
-    active: row.active === 1,
+    active: row.active,
     createdAt: row.created_at,
   };
 }

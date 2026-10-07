@@ -1,13 +1,12 @@
-import { DatabaseSync } from 'node:sqlite';
-import { ensureDataDir, env } from '../env.js';
-import { Db } from './query.js';
+import pg from 'pg';
+import { assertProductionSecrets, env } from '../env.js';
+import { createPgDb, type Db } from './query.js';
 
-let instance: Db | null = null;
-
+/**
+ * DDL do PostgreSQL. Aplicado a cada inicialização e idempotente
+ * (`IF NOT EXISTS`), já que funções serverless sobem sem estado.
+ */
 const SCHEMA = `
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE IF NOT EXISTS users (
   id             TEXT PRIMARY KEY,
   name           TEXT NOT NULL,
@@ -15,7 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash  TEXT NOT NULL,
   role           TEXT NOT NULL CHECK (role IN ('aluno', 'instrutor', 'admin')),
   organization   TEXT,
-  active         INTEGER NOT NULL DEFAULT 1,
+  active         BOOLEAN NOT NULL DEFAULT TRUE,
   created_at     TEXT NOT NULL,
   updated_at     TEXT NOT NULL
 );
@@ -68,17 +67,67 @@ CREATE TABLE IF NOT EXISTS study_sessions (
 CREATE INDEX IF NOT EXISTS idx_study_user ON study_sessions(user_id);
 `;
 
-export function getDb(): Db {
-  if (instance) return instance;
-  ensureDataDir();
-  instance = new Db(new DatabaseSync(env.databaseFile));
-  instance.exec(SCHEMA);
-  return instance;
+let pool: pg.Pool | null = null;
+let db: Db | null = null;
+/**
+ * Banco injetado manualmente (usado pela suíte de testes com PGlite).
+ * Enquanto definido, `getDb()` ignora o pool — é um ponto de costura
+ * explícito, não um truque de monkey-patch em módulo ESM.
+ */
+let override: Db | null = null;
+
+export function setDbForTesting(instance: Db | null): void {
+  override = instance;
 }
 
-export function closeDb(): void {
-  if (instance) {
-    instance.close();
-    instance = null;
+export function getDb(): Db {
+  if (override) return override;
+  if (db) return db;
+
+  pool = new pg.Pool({
+    connectionString: env.databaseUrl,
+    // Neon/Vercel exigem TLS e pooling no modo serverless.
+    ssl: env.databaseUrl.includes('sslmode=require') || env.databaseUrl.endsWith('neon.tech')
+      ? { rejectUnauthorized: false }
+      : undefined,
+    max: env.isProduction ? 5 : 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+  });
+
+  // Uma falha em conexão não deve derrubar o processo (a Vercel rotaciona).
+  pool.on('error', (error) => {
+    if (!env.isProduction) console.error('[postgres] erro do pool', error.message);
+  });
+
+  db = createPgDb(pool);
+  return db;
+}
+
+/** Cria as tabelas caso ainda não existam. */
+export async function ensureSchema(): Promise<void> {
+  const statements = SCHEMA.split(';')
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0);
+
+  for (const statement of statements) {
+    await getDb().run(statement);
+  }
+}
+
+export function assertDatabaseConfigured(): void {
+  assertProductionSecrets();
+  if (!env.databaseUrl) {
+    throw new Error(
+      'DATABASE_URL não configurada. Defina a conexão do PostgreSQL (Vercel injeta automaticamente para o Postgres gerenciado).',
+    );
+  }
+}
+
+export async function closeDb(): Promise<void> {
+  if (pool) {
+    await pool.end();
+    pool = null;
+    db = null;
   }
 }

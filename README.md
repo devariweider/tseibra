@@ -18,7 +18,7 @@ Conteúdo curado: **8 módulos · 57 aulas · 315 questões · ~31 h de carga ho
 | --- | --- |
 | Frontend | React 18 · TypeScript · Vite · React Router 7 · CSS com design tokens (claro/noturno) |
 | Backend | Node.js 22+ · Express · TypeScript · Zod |
-| Persistência | SQLite nativo (`node:sqlite`) |
+| Persistência | PostgreSQL (`pg`) — local ou Postgres gerenciado da Vercel |
 | Autenticação | scrypt (hash) + JWT em cookie `httpOnly` + sessões no banco |
 | Conteúdo | pacote compartilhado `@tseibra/content` (fonte única de verdade) |
 
@@ -122,6 +122,50 @@ Menor contraste: 4.62:1 (claro · texto sutil)
 ```
 
 O script sai com código 1 se algum par ficar abaixo do mínimo, servindo de gate em CI.
+## Deploy na Vercel
+
+A aplicação é publicada na Vercel como **SPA + função serverless** sobre PostgreSQL.
+
+```
+├── api/[...path].ts      função serverless: captura /api/*
+├── api/index.ts          função serverless: /api sem subpath
+├── vercel.json           build, outputDirectory e rewrite de rotas da SPA
+└── server/src/           o app Express compartilhado com o front
+```
+
+- `outputDirectory: web/dist` — o front é servido pela CDN da Vercel.
+- `rewrites` envia qualquer rota que não seja `/api` para `index.html`, para
+  o React Router funcionar em rotas profundas (`/modulos`, `/aula/:id`).
+- `server/src/vercel-handler.ts` cria o app Express **uma vez por instância**
+  e o reaproveita entre invocações (warm start), evitando recriar o pool a cada requisição.
+- O schema e as contas padrão são criados na **primeira requisição**
+  (`ready()`), já que em serverless não existe "boot".
+
+### Por que PostgreSQL e não SQLite
+
+Funções serverless têm sistema de arquivos efêmero: um arquivo `.sqlite` seria
+perdido a cada invocação. O Postgres é gerenciado pela própria Vercel
+(Neon) e recebe as variáveis `POSTGRES_PRISMA_URL` / `POSTGRES_URL_NON_POOLING`
+automaticamente.
+
+### O que foi adapted na migração
+
+| Antes (SQLite) | Agora (PostgreSQL) |
+| --- | --- |
+| `node:sqlite` (síncrono) | `pg` (assíncrono) — handlers Express agora usam `asyncHandler` |
+| placeholders `?` | convertidos para `$1…` dentro de `db/query.ts` (rotas inalteradas) |
+| `active INTEGER` (0/1) | `active BOOLEAN` |
+| `PRAGMA journal_mode` | removido (o pool já gerencia concorrência) |
+
+Nenhuma rota mudou de SQL: o wrapper `Db` continua expondo `get`/`all`/`run`/`transaction`.
+
+### Testes
+
+A suíte roda sobre **PGlite** (Postgres compilado para WebAssembly, dentro do
+processo do Node), de modo que `ON CONFLICT`, tipos e transações são testados
+com a mesma semântica de produção — sem precisar de um servidor de banco.
+
+## Arquitetura
 
 ## Arquitetura
 
@@ -131,10 +175,10 @@ TSEIBRA/
 │   ├── src/types.ts      schema dos blocos, aulas e questões
 │   ├── src/modulo1..8.ts conteúdo curado a partir dos PDFs
 │   └── src/index.ts      agregação, índice, validação e correção
-├── server/               API REST (Express + SQLite)
+├── server/               API REST (Express + PostgreSQL)
 │   ├── src/app.ts        montagem do app, CORS, estáticos, handler de erros
 │   ├── src/env.ts        configuração por ambiente
-│   ├── src/db/           schema, wrapper tipado do node:sqlite e seed
+│   ├── src/db/           schema, wrapper tipado do Postgres e seed
 │   ├── src/lib/          crypto (scrypt) e HttpError
 │   ├── src/middleware/   autenticação, papéis, validação Zod
 │   ├── src/routes/       auth · curriculum · progress · admin
@@ -153,7 +197,7 @@ Decisões relevantes:
 - **Conteúdo compartilhado, não duplicado.** `web` e `server` importam o mesmo pacote; assim a trilha exibida
   e a corrigida no servidor não podem divergir.
 - **Correção no servidor.** O cliente recebe apenas `id`, `enunciado` e `opções`.
-- **`node:sqlite` nativo** em vez de driver com binário nativo: `npm install` não precisa de compilador.
+- **Wrapper de banco (`db/query.ts`)** isola o driver: as rotas escrevem SQL com `?` e recebem Promises, sem conhecer `pg`.
 - **TypeScript estrito** (`strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`) nos três pacotes.
 
 ## Endpoints principais
@@ -179,7 +223,7 @@ Todas as variáveis são opcionais em desenvolvimento.
 | --- | --- | --- |
 | `PORT` | `4000` | porta da API |
 | `WEB_ORIGIN` | `http://localhost:5173` | origem permitida no CORS (dev) |
-| `DATA_DIR` | `server/data` | pasta do banco SQLite |
+| `DATABASE_URL` | — | **obrigatório**: conexão do PostgreSQL (a Vercel injeta no Postgres gerenciado) |
 | `JWT_SECRET` | valor de dev | **obrigatório em produção** |
 | `JWT_EXPIRES_IN` | `28800` | validade da sessão (8 h) |
 | `COOKIE_DOMAIN` | — | domínio do cookie (necessário atrás de proxy) |

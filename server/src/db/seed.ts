@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getCurriculum, validateCurriculum } from '@tseibra/content';
-import { closeDb, getDb } from './client.js';
+import { closeDb, ensureSchema, getDb } from './client.js';
 import { hashPassword, normalizeEmail } from '../lib/crypto.js';
 import { env } from '../env.js';
 
@@ -45,21 +45,24 @@ function seedUsers(): SeedUser[] {
   ];
 }
 
-export function runSeed(): SeedResult {
+export async function runSeed(): Promise<SeedResult> {
   const db = getDb();
+  await ensureSchema();
+
   const createdUsers: string[] = [];
   const existingUsers: string[] = [];
   const now = new Date().toISOString();
 
   for (const user of seedUsers()) {
     const email = normalizeEmail(user.email);
-    if (db.get<{ id: string }>('SELECT id FROM users WHERE email = ?', email)) {
+    const existing = await db.get<{ id: string }>('SELECT id FROM users WHERE email = ?', email);
+    if (existing) {
       existingUsers.push(email);
       continue;
     }
-    db.run(
+    await db.run(
       `INSERT INTO users (id, name, email, password_hash, role, organization, active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, TRUE, ?, ?)`,
       randomUUID(),
       user.name,
       email,
@@ -92,6 +95,11 @@ export function runSeed(): SeedResult {
 
 const invokedDirectly = process.argv[1]?.replace(/\\/g, '/').endsWith('db/seed.ts');
 if (invokedDirectly) {
-  runSeed();
-  closeDb();
+  runSeed()
+    .then(() => closeDb())
+    .then(() => process.exit(0))
+    .catch((error: unknown) => {
+      console.error('[seed] falha:', error);
+      process.exit(1);
+    });
 }

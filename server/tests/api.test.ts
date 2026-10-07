@@ -1,23 +1,30 @@
 /**
  * Teste de integração da API: sobe a aplicação em porta efêmera e exercita
  * o fluxo real (login, sessão por cookie, conteúdo, quiz, progresso, admin).
+ *
+ * O banco é um Postgres de verdade — embutido via PGlite —, de modo que a
+ * semântica de SQL, tipos, `ON CONFLICT` e transações exercitada aqui é a
+ * mesma de produção (antes rodava sobre SQLite).
  */
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { PGlite } from '@electric-sql/pglite';
 
-const dataDir = mkdtempSync(join(tmpdir(), 'tseibra-test-'));
 process.env.NODE_ENV = 'test';
-process.env.DATA_DIR = dataDir;
 process.env.JWT_SECRET = 'segredo-de-teste-suficientemente-longo';
+process.env.DATABASE_URL = 'memory://test';
 
-const { createApp } = await import('../src/app.js');
+const { createPgliteDb } = await import('../src/db/query.js');
+const { ensureSchema, setDbForTesting } = await import('../src/db/client.js');
 const { runSeed } = await import('../src/db/seed.js');
-const { closeDb } = await import('../src/db/client.js');
+const { createApp } = await import('../src/app.js');
+
+// Banco Postgres em memória, injetado antes de qualquer uso.
+const pglite = new PGlite();
+setDbForTesting(createPgliteDb(pglite as unknown as Parameters<typeof createPgliteDb>[0]));
+await ensureSchema();
 
 let server: Server;
 let baseUrl: string;
@@ -59,7 +66,7 @@ async function call<T>(path: string, options: FetchOptions = {}): Promise<{ stat
 }
 
 before(async () => {
-  runSeed();
+  await runSeed();
   const app = createApp();
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => resolve());
@@ -70,8 +77,7 @@ before(async () => {
 
 after(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  closeDb();
-  rmSync(dataDir, { recursive: true, force: true });
+  await pglite.close();
 });
 
 describe('health e conteúdo público', () => {

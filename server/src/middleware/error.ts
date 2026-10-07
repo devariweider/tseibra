@@ -1,7 +1,20 @@
-import type { NextFunction, Request, Response } from 'express';
+import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { ZodError, type ZodTypeAny } from 'zod';
 import { env } from '../env.js';
 import { HttpError } from '../lib/http-error.js';
+
+type AsyncHandler = (req: Request, res: Response, next: NextFunction) => Promise<unknown>;
+
+/**
+ * Encapsula handlers assíncronos para que rejeições cheguem ao `errorHandler`.
+ * O Express 4 não faz isso sozinho: um `throw` dentro de um handler `async`
+ * viraria uma promessa rejeitada sem tratamento.
+ */
+export function asyncHandler(handler: AsyncHandler): RequestHandler {
+  return (req, res, next) => {
+    handler(req, res, next).catch(next);
+  };
+}
 
 interface ValidationTargets {
   body?: ZodTypeAny;

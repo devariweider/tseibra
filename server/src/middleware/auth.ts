@@ -46,16 +46,16 @@ export function signSessionToken(claims: SessionClaims): string {
   });
 }
 
-export function createSession(
+export async function createSession(
   userId: string,
   meta: { userAgent?: string | undefined; ipAddress?: string | undefined },
-): { token: string; session: SessionRow } {
+): Promise<{ token: string; session: SessionRow }> {
   const db = getDb();
   const sessionId = randomUUID();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + env.jwt.expiresInSeconds * 1000);
 
-  db.run(
+  await db.run(
     `INSERT INTO sessions (id, user_id, created_at, expires_at, revoked_at, user_agent, ip_address)
      VALUES (?, ?, ?, ?, NULL, ?, ?)`,
     sessionId,
@@ -66,7 +66,7 @@ export function createSession(
     meta.ipAddress ?? null,
   );
 
-  const session = db.get<SessionRow>('SELECT * FROM sessions WHERE id = ?', sessionId);
+  const session = await db.get<SessionRow>('SELECT * FROM sessions WHERE id = ?', sessionId);
   if (!session) throw HttpError.internal('Não foi possível criar a sessão.');
 
   return { token: signSessionToken({ sub: userId, sid: sessionId, role: 'aluno' }), session };
@@ -80,23 +80,23 @@ export function clearAuthCookie(res: Response): void {
   res.clearCookie(AUTH_COOKIE, cookieOptions);
 }
 
-export function revokeSession(sessionId: string): void {
-  getDb().run(
+export async function revokeSession(sessionId: string): Promise<void> {
+  await getDb().run(
     'UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL',
     new Date().toISOString(),
     sessionId,
   );
 }
 
-export function revokeAllUserSessions(userId: string): void {
-  getDb().run(
+export async function revokeAllUserSessions(userId: string): Promise<void> {
+  await getDb().run(
     'UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL',
     new Date().toISOString(),
     userId,
   );
 }
 
-function loadUserFromToken(token: string): { user: PublicUser; session: SessionRow } | null {
+async function loadUserFromToken(token: string): Promise<{ user: PublicUser; session: SessionRow } | null> {
   let claims: SessionClaims;
   try {
     claims = claimsSchema.parse(jwt.verify(token, env.jwt.secret, { issuer: env.jwt.issuer }));
@@ -105,13 +105,13 @@ function loadUserFromToken(token: string): { user: PublicUser; session: SessionR
   }
 
   const db = getDb();
-  const session = db.get<SessionRow>('SELECT * FROM sessions WHERE id = ?', claims.sid);
+  const session = await db.get<SessionRow>('SELECT * FROM sessions WHERE id = ?', claims.sid);
   if (!session || session.user_id !== claims.sub) return null;
   if (session.revoked_at !== null) return null;
   if (new Date(session.expires_at).getTime() <= Date.now()) return null;
 
-  const row = db.get<UserRow>('SELECT * FROM users WHERE id = ?', claims.sub);
-  if (!row || row.active !== 1) return null;
+  const row = await db.get<UserRow>('SELECT * FROM users WHERE id = ?', claims.sub);
+  if (!row || !row.active) return null;
 
   return { user: toPublicUser(row), session };
 }
@@ -129,14 +129,20 @@ function readToken(req: Request): string | null {
 /** Popula req.user quando houver sessão válida; nunca bloqueia a requisição. */
 export function attachUser(req: Request, _res: Response, next: NextFunction): void {
   const token = readToken(req);
-  if (token) {
-    const result = loadUserFromToken(token);
-    if (result) {
-      req.user = result.user;
-      req.session = result.session;
-    }
+  if (!token) {
+    next();
+    return;
   }
-  next();
+
+  loadUserFromToken(token)
+    .then((result) => {
+      if (result) {
+        req.user = result.user;
+        req.session = result.session;
+      }
+      next();
+    })
+    .catch(() => next());
 }
 
 export function requireAuth(req: Request, _res: Response, next: NextFunction): void {

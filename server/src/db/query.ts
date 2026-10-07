@@ -1,56 +1,184 @@
-import { type DatabaseSync, type SQLInputValue, type SQLOutputValue } from 'node:sqlite';
+import type { Pool } from 'pg';
 
 /**
- * Camada fina e tipada sobre `node:sqlite`.
+ * Camada de acesso a dados sobre PostgreSQL.
  *
- * O driver retorna `Record<string, SQLOutputValue>` e aceita apenas
- * `SQLInputValue`. Encapsulamos aqui para que as rotas trabalhem com
- * tipos de domínio (linhas do banco) sem `as` espalhado pelo código.
+ * Por trás desta classe estão duas decisões que mantêm as rotas limpas:
+ *
+ * 1. **Placeholders no estilo SQLite (`?`)** — o SQL das rotas continua
+ *    escrito com `?` e é convertido para `$1, $2…` aqui, na borda.
+ * 2. **Mesma API de antes** (`get`/`all`/`run`/`transaction`), agora
+ *    assíncrona, porque o Postgres é acessado pela rede.
+ *
+ * A mesma API é satisfeita por um Postgres real (`pg`) e por um Postgres
+ * embarcado em memória (PGlite), o que permite rodar a suíte de testes
+ * sem precisar de um servidor.
  */
 
-export type SqlParam = SQLInputValue;
-export type SqlRow = Record<string, SQLOutputValue>;
+export type SqlParam = string | number | boolean | null | Date;
+
+export interface QueryResult<T> {
+  rows: T[];
+  rowCount: number;
+}
+
+/** Conexão capaz de executar consultas (o pool serve para uso avulso). */
+export interface Session {
+  query<T>(text: string, params: SqlParam[]): Promise<QueryResult<T>>;
+}
+
+/** Sessão descartável, devolvida ao pool ao fim da transação. */
+export interface AcquiredSession extends Session {
+  release(): void;
+}
+
+/** Fornece uma sessão exclusiva — usada para transações. */
+export type SessionProvider = () => Promise<AcquiredSession>;
 
 export class Db {
-  constructor(private readonly database: DatabaseSync) {}
+  constructor(
+    private readonly session: Session,
+    private readonly acquire?: SessionProvider,
+  ) {}
 
-  /** Executa uma consulta que retorna no máximo uma linha. */
-  get<T>(sql: string, ...params: SqlParam[]): T | undefined {
-    const row = this.database.prepare(sql).get(...params) as SqlRow | undefined;
-    return row === undefined ? undefined : (row as T);
+  async get<T>(sql: string, ...params: SqlParam[]): Promise<T | undefined> {
+    const { rows } = await this.session.query<T>(toPostgres(sql), params);
+    return rows[0];
   }
 
-  /** Executa uma consulta que retorna várias linhas. */
-  all<T>(sql: string, ...params: SqlParam[]): T[] {
-    const rows = this.database.prepare(sql).all(...params) as SqlRow[];
-    return rows as T[];
+  async all<T>(sql: string, ...params: SqlParam[]): Promise<T[]> {
+    const { rows } = await this.session.query<T>(toPostgres(sql), params);
+    return rows;
   }
 
-  /** Executa comandos de escrita (INSERT/UPDATE/DELETE/DDL). */
-  run(sql: string, ...params: SqlParam[]): { changes: number | bigint } {
-    return this.database.prepare(sql).run(...params);
+  async run(sql: string, ...params: SqlParam[]): Promise<{ changes: number }> {
+    const result = await this.session.query(toPostgres(sql), params);
+    return { changes: result.rowCount };
   }
 
-  exec(sql: string): void {
-    this.database.exec(sql);
-  }
+  /**
+   * Executa `fn` dentro de uma transação. Sem um provedor de sessão dedicado
+   * (caso do PGlite, que já é single-connection) usa BEGIN/COMMIT na sessão.
+   */
+  async transaction<T>(fn: () => Promise<T>): Promise<T> {
+    if (!this.acquire) {
+      await this.session.query('BEGIN', []);
+      try {
+        const result = await fn();
+        await this.session.query('COMMIT', []);
+        return result;
+      } catch (error) {
+        await this.session.query('ROLLBACK', []).catch(() => undefined);
+        throw error;
+      }
+    }
 
-  close(): void {
-    this.database.close();
-  }
-
-  /** Executa `fn` dentro de uma transação (rollback automático em erro). */
-  transaction<T>(fn: () => T): T {
-    this.database.exec('BEGIN');
+    const client = await this.acquire();
     try {
-      const result = fn();
-      this.database.exec('COMMIT');
+      await client.query('BEGIN', []);
+      const result = await fn();
+      await client.query('COMMIT', []);
       return result;
     } catch (error) {
-      this.database.exec('ROLLBACK');
+      await client.query('ROLLBACK', []).catch(() => undefined);
       throw error;
+    } finally {
+      client.release();
     }
   }
+}
+
+/**
+ * Converte placeholders `?` (SQLite) para `$1, $2…` (Postgres).
+ *
+ * Só reescreve o que está fora de literais entre aspas simples, para não
+ * corromper valores como `WHERE nome = 'P?'`.
+ */
+export function toPostgres(sql: string): string {
+  let out = '';
+  let index = 0;
+  let inString = false;
+
+  for (let i = 0; i < sql.length; i += 1) {
+    const char = sql[i];
+
+    if (char === "'") {
+      // '' é escape de aspa simples dentro do literal
+      if (inString && sql[i + 1] === "'") {
+        out += "''";
+        i += 1;
+        continue;
+      }
+      inString = !inString;
+      out += char;
+      continue;
+    }
+
+    if (!inString && char === '?') {
+      index += 1;
+      out += `$${index}`;
+      continue;
+    }
+
+    out += char;
+  }
+
+  return out;
+}
+
+/** Cria um `Db` sobre um pool `pg` (Postgres em produção). */
+export function createPgDb(pool: Pool): Db {
+  type Executor = (
+    text: string,
+    params: unknown[],
+  ) => Promise<{ rows: unknown[]; rowCount: number | null }>;
+
+  function adapt(exec: Executor): Session {
+    return {
+      async query<T>(text: string, params: SqlParam[]): Promise<QueryResult<T>> {
+        const result = await exec(text, params as unknown[]);
+        return { rows: result.rows as T[], rowCount: result.rowCount ?? 0 };
+      },
+    };
+  }
+
+  const defaultSession = adapt((text, params) => pool.query(text, params));
+
+  const provider: SessionProvider = async () => {
+    const client = await pool.connect();
+    return {
+      ...adapt((text, params) => client.query(text, params)),
+      release: () => client.release(),
+    };
+  };
+
+  return new Db(defaultSession, provider);
+}
+
+interface PgliteLike {
+  query(text: string, params?: unknown[]): Promise<{ rows: unknown[][]; affectedRows?: number }>;
+}
+
+/** Cria um `Db` sobre PGlite (Postgres em memória, usado nos testes). */
+export function createPgliteDb(client: PgliteLike): Db {
+  const session: Session = {
+    async query<T>(text: string, params: SqlParam[]): Promise<QueryResult<T>> {
+      const result = await client.query(text, params as unknown[]);
+      const rows = result.rows.map((row): T => {
+        if (!Array.isArray(row)) return row as T;
+        const names = Object.keys(row);
+        const values: unknown[] = row;
+        const mapped: Record<string, unknown> = {};
+        names.forEach((name, index) => {
+          mapped[name] = values[index];
+        });
+        return mapped as T;
+      });
+      return { rows, rowCount: result.affectedRows ?? rows.length };
+    },
+  };
+
+  return new Db(session);
 }
 
 /**

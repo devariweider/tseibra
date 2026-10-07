@@ -7,7 +7,7 @@ import type { UserRow } from '../db/types.js';
 import { toPublicUser } from '../db/types.js';
 import { hashPassword, normalizeEmail, verifyPassword } from '../lib/crypto.js';
 import { HttpError } from '../lib/http-error.js';
-import { validate } from '../middleware/error.js';
+import { asyncHandler, validate } from '../middleware/error.js';
 import {
   clearAuthCookie,
   createSession,
@@ -61,71 +61,83 @@ const registerSchema = z.object({
   password: passwordSchema,
 });
 
-authRouter.post('/login', loginLimiter, validate({ body: loginSchema }), (req, res) => {
-  const { email, password } = req.body as z.infer<typeof loginSchema>;
-  const db = getDb();
-  const row = db.get<UserRow>('SELECT * FROM users WHERE email = ?', normalizeEmail(email));
+authRouter.post(
+  '/login',
+  loginLimiter,
+  validate({ body: loginSchema }),
+  asyncHandler(async (req, res) => {
+    const { email, password } = req.body as z.infer<typeof loginSchema>;
+    const db = getDb();
+    const row = await db.get<UserRow>('SELECT * FROM users WHERE email = ?', normalizeEmail(email));
 
-  // Mensagem genérica e comparação de hash mesmo sem usuário, para não
-  // revelar se o e-mail existe e para uniformizar o tempo de resposta.
-  const invalid = HttpError.unauthorized('E-mail ou senha inválidos.');
-  if (!row) {
-    verifyPassword(password, hashPassword('timing-equalizer'));
-    throw invalid;
-  }
-  if (!verifyPassword(password, row.password_hash)) throw invalid;
-  if (row.active !== 1) {
-    throw HttpError.forbidden('Usuário desativado. Procure o administrador da plataforma.');
-  }
+    // Mensagem genérica e comparação de hash mesmo sem usuário, para não
+    // revelar se o e-mail existe e para uniformizar o tempo de resposta.
+    const invalid = HttpError.unauthorized('E-mail ou senha inválidos.');
+    if (!row) {
+      verifyPassword(password, hashPassword('timing-equalizer'));
+      throw invalid;
+    }
+    if (!verifyPassword(password, row.password_hash)) throw invalid;
+    if (!row.active) {
+      throw HttpError.forbidden('Usuário desativado. Procure o administrador da plataforma.');
+    }
 
-  const { token } = createSession(row.id, {
-    userAgent: req.header('user-agent'),
-    ipAddress: req.ip,
-  });
-  setAuthCookie(res, token);
-  res.json({ user: toPublicUser(row) });
-});
+    const { token } = await createSession(row.id, {
+      userAgent: req.header('user-agent'),
+      ipAddress: req.ip,
+    });
+    setAuthCookie(res, token);
+    res.json({ user: toPublicUser(row) });
+  }),
+);
 
-authRouter.post('/register', registerLimiter, validate({ body: registerSchema }), (req, res) => {
-  const { name, email, organization, password } = req.body as z.infer<typeof registerSchema>;
-  const db = getDb();
-  const normalizedEmail = normalizeEmail(email);
+authRouter.post(
+  '/register',
+  registerLimiter,
+  validate({ body: registerSchema }),
+  asyncHandler(async (req, res) => {
+    const { name, email, organization, password } = req.body as z.infer<typeof registerSchema>;
+    const db = getDb();
+    const normalizedEmail = normalizeEmail(email);
 
-  if (db.get<{ id: string }>('SELECT id FROM users WHERE email = ?', normalizedEmail)) {
-    throw HttpError.conflict('Já existe uma conta com este e-mail.');
-  }
+    const existing = await db.get<{ id: string }>('SELECT id FROM users WHERE email = ?', normalizedEmail);
+    if (existing) throw HttpError.conflict('Já existe uma conta com este e-mail.');
 
-  const now = new Date().toISOString();
-  const id = randomUUID();
-  db.run(
-    `INSERT INTO users (id, name, email, password_hash, role, organization, active, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'aluno', ?, 1, ?, ?)`,
-    id,
-    name.trim(),
-    normalizedEmail,
-    hashPassword(password),
-    organization ?? null,
-    now,
-    now,
-  );
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    await db.run(
+      `INSERT INTO users (id, name, email, password_hash, role, organization, active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'aluno', ?, TRUE, ?, ?)`,
+      id,
+      name.trim(),
+      normalizedEmail,
+      hashPassword(password),
+      organization ?? null,
+      now,
+      now,
+    );
 
-  const row = db.get<UserRow>('SELECT * FROM users WHERE id = ?', id);
-  if (!row) throw HttpError.internal('Falha ao criar a conta.');
+    const row = await db.get<UserRow>('SELECT * FROM users WHERE id = ?', id);
+    if (!row) throw HttpError.internal('Falha ao criar a conta.');
 
-  const { token } = createSession(row.id, {
-    userAgent: req.header('user-agent'),
-    ipAddress: req.ip,
-  });
-  setAuthCookie(res, token);
-  res.status(201).json({ user: toPublicUser(row) });
-});
+    const { token } = await createSession(row.id, {
+      userAgent: req.header('user-agent'),
+      ipAddress: req.ip,
+    });
+    setAuthCookie(res, token);
+    res.status(201).json({ user: toPublicUser(row) });
+  }),
+);
 
-authRouter.post('/logout', (req, res) => {
-  const sessionId = req.session?.id;
-  if (sessionId) revokeSession(sessionId);
-  clearAuthCookie(res);
-  res.status(204).end();
-});
+authRouter.post(
+  '/logout',
+  asyncHandler(async (req, res) => {
+    const sessionId = req.session?.id;
+    if (sessionId) await revokeSession(sessionId);
+    clearAuthCookie(res);
+    res.status(204).end();
+  }),
+);
 
 authRouter.get('/me', requireAuth, (req, res) => {
   res.json({ user: req.user });
@@ -140,16 +152,16 @@ authRouter.post(
   '/change-password',
   requireAuth,
   validate({ body: changePasswordSchema }),
-  (req, res) => {
+  asyncHandler(async (req, res) => {
     const { currentPassword, newPassword } = req.body as z.infer<typeof changePasswordSchema>;
     const db = getDb();
-    const row = db.get<UserRow>('SELECT * FROM users WHERE id = ?', req.user!.id);
+    const row = await db.get<UserRow>('SELECT * FROM users WHERE id = ?', req.user!.id);
     if (!row) throw HttpError.notFound('Usuário não encontrado.');
     if (!verifyPassword(currentPassword, row.password_hash)) {
       throw HttpError.badRequest('Senha atual incorreta.');
     }
 
-    db.run(
+    await db.run(
       'UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?',
       hashPassword(newPassword),
       new Date().toISOString(),
@@ -157,8 +169,8 @@ authRouter.post(
     );
 
     // Invalida todas as sessões (inclusive a atual) por segurança.
-    revokeAllUserSessions(row.id);
+    await revokeAllUserSessions(row.id);
     clearAuthCookie(res);
     res.json({ ok: true, message: 'Senha alterada. Faça login novamente.' });
-  },
+  }),
 );

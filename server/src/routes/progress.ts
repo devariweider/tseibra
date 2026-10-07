@@ -13,7 +13,7 @@ import { requireParam } from '../db/query.js';
 import type { LessonProgressRow, QuizAttemptRow, StudySessionRow } from '../db/types.js';
 import { HttpError } from '../lib/http-error.js';
 import { requireAuth } from '../middleware/auth.js';
-import { validate } from '../middleware/error.js';
+import { asyncHandler, validate } from '../middleware/error.js';
 
 export const progressRouter = Router();
 
@@ -53,8 +53,8 @@ function assertKnownLesson(lessonId: string): void {
   }
 }
 
-function loadProgressRow(userId: string, lessonId: string): LessonProgressRow {
-  const row = getDb().get<LessonProgressRow>(
+async function loadProgressRow(userId: string, lessonId: string): Promise<LessonProgressRow> {
+  const row = await getDb().get<LessonProgressRow>(
     'SELECT * FROM lesson_progress WHERE user_id = ? AND lesson_id = ?',
     userId,
     lessonId,
@@ -63,40 +63,43 @@ function loadProgressRow(userId: string, lessonId: string): LessonProgressRow {
   return row;
 }
 
-progressRouter.get('/progress', (req, res) => {
-  const rows = getDb().all<LessonProgressRow>(
-    'SELECT * FROM lesson_progress WHERE user_id = ?',
-    req.user!.id,
-  );
-  res.json({ progress: rows.map(toProgressDto) });
-});
+progressRouter.get(
+  '/progress',
+  asyncHandler(async (req, res) => {
+    const rows = await getDb().all<LessonProgressRow>(
+      'SELECT * FROM lesson_progress WHERE user_id = ?',
+      req.user!.id,
+    );
+    res.json({ progress: rows.map(toProgressDto) });
+  }),
+);
 
 progressRouter.get(
   '/progress/:lessonId',
   validate({ params: lessonIdSchema }),
-  (req, res) => {
+  asyncHandler(async (req, res) => {
     const lessonId = requireParam(req.params, 'lessonId');
     assertKnownLesson(lessonId);
-    const row = getDb().get<LessonProgressRow>(
+    const row = await getDb().get<LessonProgressRow>(
       'SELECT * FROM lesson_progress WHERE user_id = ? AND lesson_id = ?',
       req.user!.id,
       lessonId,
     );
     res.json({ progress: row ? toProgressDto(row) : null });
-  },
+  }),
 );
 
 /** Marca a aula como iniciada (idempotente). */
 progressRouter.post(
   '/progress/:lessonId/start',
   validate({ params: lessonIdSchema }),
-  (req, res) => {
+  asyncHandler(async (req, res) => {
     const lessonId = requireParam(req.params, 'lessonId');
     assertKnownLesson(lessonId);
     const db = getDb();
     const now = new Date().toISOString();
 
-    db.run(
+    await db.run(
       `INSERT INTO lesson_progress (user_id, lesson_id, status, attempts_count, started_at, updated_at)
        VALUES (?, ?, 'em_andamento', 0, ?, ?)
        ON CONFLICT(user_id, lesson_id) DO UPDATE SET
@@ -109,8 +112,8 @@ progressRouter.post(
       now,
     );
 
-    res.json({ progress: toProgressDto(loadProgressRow(req.user!.id, lessonId)) });
-  },
+    res.json({ progress: toProgressDto(await loadProgressRow(req.user!.id, lessonId)) });
+  }),
 );
 
 const submissionSchema = z.object({
@@ -125,7 +128,7 @@ const submissionSchema = z.object({
 progressRouter.post(
   '/progress/:lessonId/submissions',
   validate({ params: lessonIdSchema, body: submissionSchema }),
-  (req, res) => {
+  asyncHandler(async (req, res) => {
     const lessonId = requireParam(req.params, 'lessonId');
     const { answers } = req.body as z.infer<typeof submissionSchema>;
     assertKnownLesson(lessonId);
@@ -146,9 +149,10 @@ progressRouter.post(
 
     const db = getDb();
     const now = new Date().toISOString();
+    const passed = graded.score >= PASS_THRESHOLD;
 
-    db.transaction(() => {
-      db.run(
+    await db.transaction(async () => {
+      await db.run(
         `INSERT INTO quiz_attempts (id, user_id, lesson_id, score, total, answers, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         randomUUID(),
@@ -160,7 +164,7 @@ progressRouter.post(
         now,
       );
 
-      db.run(
+      await db.run(
         `INSERT INTO lesson_progress
            (user_id, lesson_id, status, best_score, attempts_count, last_score, started_at, completed_at, updated_at)
          VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
@@ -174,17 +178,17 @@ progressRouter.post(
            updated_at = excluded.updated_at`,
         req.user!.id,
         lessonId,
-        graded.score >= PASS_THRESHOLD ? 'concluido' : 'em_andamento',
+        passed ? 'concluido' : 'em_andamento',
         graded.score,
         graded.score,
         now,
-        graded.score >= PASS_THRESHOLD ? now : null,
+        passed ? now : null,
         now,
       );
     });
 
-    res.json({ result: graded, progress: toProgressDto(loadProgressRow(req.user!.id, lessonId)) });
-  },
+    res.json({ result: graded, progress: toProgressDto(await loadProgressRow(req.user!.id, lessonId)) });
+  }),
 );
 
 /** Registro de tempo de estudo (enviado pelo front ao sair da aula). */
@@ -193,18 +197,22 @@ const studySessionSchema = z.object({
   seconds: z.number().int().min(0).max(60 * 60 * 12),
 });
 
-progressRouter.post('/study-sessions', validate({ body: studySessionSchema }), (req, res) => {
-  const { startedAt, seconds } = req.body as z.infer<typeof studySessionSchema>;
-  getDb().run(
-    'INSERT INTO study_sessions (id, user_id, started_at, ended_at, seconds) VALUES (?, ?, ?, ?, ?)',
-    randomUUID(),
-    req.user!.id,
-    startedAt,
-    new Date().toISOString(),
-    seconds,
-  );
-  res.status(201).json({ ok: true });
-});
+progressRouter.post(
+  '/study-sessions',
+  validate({ body: studySessionSchema }),
+  asyncHandler(async (req, res) => {
+    const { startedAt, seconds } = req.body as z.infer<typeof studySessionSchema>;
+    await getDb().run(
+      'INSERT INTO study_sessions (id, user_id, started_at, ended_at, seconds) VALUES (?, ?, ?, ?, ?)',
+      randomUUID(),
+      req.user!.id,
+      startedAt,
+      new Date().toISOString(),
+      seconds,
+    );
+    res.status(201).json({ ok: true });
+  }),
+);
 
 interface ModuleProgressDto {
   moduleId: string;
@@ -233,74 +241,78 @@ interface DashboardPayload {
   continueStudying: { lessonId: string; moduleId: string; title: string } | null;
 }
 
-progressRouter.get('/dashboard', (req, res) => {
-  const db = getDb();
-  const curriculum = getCurriculum();
-  const userId = req.user!.id;
+progressRouter.get(
+  '/dashboard',
+  asyncHandler(async (req, res) => {
+    const db = getDb();
+    const curriculum = getCurriculum();
+    const userId = req.user!.id;
 
-  const progressRows = db.all<LessonProgressRow>('SELECT * FROM lesson_progress WHERE user_id = ?', userId);
+    const progressRows = await db.all<LessonProgressRow>(
+      'SELECT * FROM lesson_progress WHERE user_id = ?',
+      userId,
+    );
+    const attempts = await db.all<QuizAttemptRow>(
+      'SELECT lesson_id, score, total, created_at FROM quiz_attempts WHERE user_id = ? ORDER BY created_at DESC',
+      userId,
+    );
+    const studyRows = await db.all<StudySessionRow>(
+      'SELECT seconds, started_at FROM study_sessions WHERE user_id = ?',
+      userId,
+    );
 
-  const attempts = db.all<QuizAttemptRow>(
-    'SELECT lesson_id, score, total, created_at FROM quiz_attempts WHERE user_id = ? ORDER BY created_at DESC',
-    userId,
-  );
+    const completedLessons = progressRows.filter((row) => row.status === 'concluido').length;
+    const startedLessons = progressRows.filter((row) => row.status !== 'nao_iniciado').length;
+    const scored = progressRows.filter((row) => row.best_score !== null);
+    const averageScore =
+      scored.length === 0
+        ? null
+        : Math.round(scored.reduce((sum, row) => sum + (row.best_score ?? 0), 0) / scored.length);
 
-  const studyRows = db.all<StudySessionRow>(
-    'SELECT seconds, started_at FROM study_sessions WHERE user_id = ?',
-    userId,
-  );
+    const byModule: ModuleProgressDto[] = curriculum.modules.map((module) => {
+      const lessonIds = new Set(module.lessons.map((lesson) => lesson.id));
+      const moduleProgress = progressRows.filter((row) => lessonIds.has(row.lesson_id));
+      const moduleScores = moduleProgress
+        .map((row) => row.best_score)
+        .filter((score): score is number => score !== null);
+      return {
+        moduleId: module.id,
+        moduleTitle: module.title,
+        totalLessons: module.lessonCount,
+        completedLessons: moduleProgress.filter((row) => row.status === 'concluido').length,
+        averageScore:
+          moduleScores.length === 0
+            ? null
+            : Math.round(moduleScores.reduce((sum, score) => sum + score, 0) / moduleScores.length),
+      };
+    });
 
-  const completedLessons = progressRows.filter((row) => row.status === 'concluido').length;
-  const startedLessons = progressRows.filter((row) => row.status !== 'nao_iniciado').length;
-  const scored = progressRows.filter((row) => row.best_score !== null);
-  const averageScore =
-    scored.length === 0
-      ? null
-      : Math.round(scored.reduce((sum, row) => sum + (row.best_score ?? 0), 0) / scored.length);
-
-  const byModule: ModuleProgressDto[] = curriculum.modules.map((module) => {
-    const lessonIds = new Set(module.lessons.map((lesson) => lesson.id));
-    const moduleProgress = progressRows.filter((row) => lessonIds.has(row.lesson_id));
-    const moduleScores = moduleProgress
-      .map((row) => row.best_score)
-      .filter((score): score is number => score !== null);
-    return {
-      moduleId: module.id,
-      moduleTitle: module.title,
-      totalLessons: module.lessonCount,
-      completedLessons: moduleProgress.filter((row) => row.status === 'concluido').length,
-      averageScore:
-        moduleScores.length === 0
-          ? null
-          : Math.round(moduleScores.reduce((sum, score) => sum + score, 0) / moduleScores.length),
+    const payload: DashboardPayload = {
+      totals: curriculum.totals,
+      completedLessons,
+      startedLessons,
+      inProgressPercent:
+        curriculum.totals.lessons === 0 ? 0 : Math.round((completedLessons / curriculum.totals.lessons) * 100),
+      averageScore,
+      studySeconds: studyRows.reduce((sum, row) => sum + row.seconds, 0),
+      streakDays: calculateStreak([
+        ...studyRows.map((row) => row.started_at),
+        ...attempts.map((attempt) => attempt.created_at),
+      ]),
+      byModule,
+      recentAttempts: attempts.slice(0, 8).map((attempt) => ({
+        lessonId: attempt.lesson_id,
+        lessonTitle: getLessonById(attempt.lesson_id)?.lesson.title ?? attempt.lesson_id,
+        score: attempt.score,
+        total: attempt.total,
+        createdAt: attempt.created_at,
+      })),
+      continueStudying: resolveContinueStudying(progressRows),
     };
-  });
 
-  const payload: DashboardPayload = {
-    totals: curriculum.totals,
-    completedLessons,
-    startedLessons,
-    inProgressPercent:
-      curriculum.totals.lessons === 0 ? 0 : Math.round((completedLessons / curriculum.totals.lessons) * 100),
-    averageScore,
-    studySeconds: studyRows.reduce((sum, row) => sum + row.seconds, 0),
-    streakDays: calculateStreak([
-      ...studyRows.map((row) => row.started_at),
-      ...attempts.map((attempt) => attempt.created_at),
-    ]),
-    byModule,
-    recentAttempts: attempts.slice(0, 8).map((attempt) => ({
-      lessonId: attempt.lesson_id,
-      lessonTitle: getLessonById(attempt.lesson_id)?.lesson.title ?? attempt.lesson_id,
-      score: attempt.score,
-      total: attempt.total,
-      createdAt: attempt.created_at,
-    })),
-    continueStudying: resolveContinueStudying(progressRows),
-  };
-
-  res.json(payload);
-});
+    res.json(payload);
+  }),
+);
 
 function resolveContinueStudying(rows: LessonProgressRow[]): DashboardPayload['continueStudying'] {
   const pending = rows
