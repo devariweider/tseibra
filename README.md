@@ -246,3 +246,16 @@ serve a aplicação inteira.
 
 Navegação por teclado, foco visível (o anel de foco ganha contraste em cada tema), `aria-*` nos componentes
 interativos, contraste medido por script, suporte a `prefers-reduced-motion` e layout do celular ao desktop.
+
+## Deploy
+
+Conectado ao GitHub: cada git push em `main` publica automaticamente em
+<https://tseibra-plataforma.vercel.app>. Branches e pull requests recebem URL
+de preview próprio.
+
+Comandos habituais:
+
+- `npm run dev` — API (:4000) + front (:5173) com recarga automática
+- `npm test` — 60 testes (conteúdo, cripto e integração da API)
+- `npm run typecheck` — verificação de tipos nos três pacotes
+- `npm run check:contrast` — contraste WCAG dos dois temas
