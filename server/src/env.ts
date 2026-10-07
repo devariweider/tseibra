@@ -32,6 +32,36 @@ const NODE_ENV = readEnv('NODE_ENV', 'development');
 const isProduction = NODE_ENV === 'production';
 const isTest = NODE_ENV === 'test';
 
+/**
+ * Escolhe a conexão do PostgreSQL entre as variáveis injetadas pelo
+ * provedor (Vercel Postgres/Neon, Supabase, etc.).
+ *
+ * Além da ordem, a URL é inspecionada: poolers em **modo transação**
+ * (PgBouncer/Supavisor na porta 6543 ou com `pgbouncer=true`) não sustentam
+ * `BEGIN`/`COMMIT` no mesmo cliente, e o registro da tentativa de quiz usa
+ * transação explícita. Essas URLs são rebaixadas de prioridade.
+ */
+function resolveDatabaseUrl(): string {
+  const candidates: string[] = [
+    process.env.DATABASE_URL ?? '',
+    process.env.POSTGRES_URL_NON_POOLING ?? '',
+    process.env.POSTGRES_URL ?? '',
+    process.env.POSTGRES_PRISMA_URL ?? '',
+    process.env.SUPABASE_DB_URL ?? '',
+    process.env.POSTGRES_URL_NO_POOLING ?? '',
+  ].filter((value) => value.length > 0);
+
+  if (candidates.length === 0) return '';
+
+  const isTransactionPooler = (url: string): boolean => {
+    const normalized = url.toLowerCase();
+    return normalized.includes('pgbouncer=true') || /:6543\//.test(normalized);
+  };
+
+  const direct = candidates.find((url) => !isTransactionPooler(url));
+  return direct ?? candidates[0] ?? '';
+}
+
 export const env = {
   NODE_ENV,
   isProduction,
@@ -46,19 +76,7 @@ export const env = {
     expiresInSeconds: Number.parseInt(readEnv('JWT_EXPIRES_IN', '28800'), 10),
     issuer: 'tseibra-plataforma',
   },
-  /**
-   * Conexão do PostgreSQL. Na Vercel o Postgres gerenciado injeta
-   * `POSTGRES_URL_NON_POOLING` (conexão direta) e `POSTGRES_PRISMA_URL`
-   * (pooled, via pgbouncer).
-   *
-   * A ordem importa: a versão com pool usa pgbouncer em modo transação, que
-   * não sustenta `BEGIN/COMMIT` no mesmo cliente. Como o registro de
-   *.quiz usa transação explícita, a conexão direta é preferida.
-   */
-  databaseUrl: readEnv(
-    'DATABASE_URL',
-    readEnv('POSTGRES_URL_NON_POOLING', readEnv('POSTGRES_PRISMA_URL', readEnv('POSTGRES_URL', ''))),
-  ),
+  databaseUrl: resolveDatabaseUrl(),
   seed: {
     adminEmail: readEnv('SEED_ADMIN_EMAIL', 'admin@tseibra.local'),
     adminPassword: readEnv('SEED_ADMIN_PASSWORD', 'Admin@123'),
