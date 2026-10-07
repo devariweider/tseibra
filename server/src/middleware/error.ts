@@ -96,20 +96,31 @@ export function errorHandler(error: unknown, _req: Request, res: Response, _next
   }
 
   /**
-   * Em produção devolvemos apenas o código técnico do erro (ex.: `ECONNREFUSED`,
-   * `28P01` para senha inválida, `3D000` para banco inexistente) e a origem.
-   * Isso não é segredo e é indispensável para diagnosticar falha de banco a
-   * partir de um log de função serverless, onde a stack não aparece.
-   */
-  const technicalCode =
-    typeof candidate?.code === 'string' ? candidate.code : 'internal_error';
-  const origin = candidate?.name && candidate.name !== 'Error' ? candidate.name : undefined;
+ * Em produção devolvemos apenas o código técnico do erro (ex.: `ECONNREFUSED`,
+ * `28P01` para senha inválida, `3D000` para banco inexistente) e a origem.
+ * Isso não é segredo e é indispensável para diagnosticar falha de banco a
+ * partir de um log de função serverless, onde a stack não aparece.
+ *
+ * Definindo `DEBUG_ERRORS=1` a mensagem e a stack também são devolvidas —
+ * recurso de diagnóstico temporário, para desligar logo em seguida.
+ */
+const technicalCode =
+  typeof candidate?.code === 'string' ? candidate.code : 'internal_error';
+const origin = candidate?.name && candidate.name !== 'Error' ? candidate.name : undefined;
+const debug = process.env.DEBUG_ERRORS === '1' || env.NODE_ENV !== 'production';
 
-  res.status(500).json({
-    error: {
-      code: 'internal_error',
-      message: 'Erro interno do servidor.',
-      details: { technicalCode, origin },
-    },
-  });
+res.status(500).json({
+  error: {
+    code: 'internal_error',
+    message: 'Erro interno do servidor.',
+    details: debug
+      ? {
+          technicalCode,
+          origin,
+          message: candidate?.message,
+          stack: candidate?.stack?.split('\n').slice(0, 6).join('\n'),
+        }
+      : { technicalCode, origin },
+  },
+});
 }
