@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Plataforma de Treinamento SEI Brasiléia — capacitação em SEI para servidores públicos."
+    />
+    <meta name="theme-color" content="#0b3b6f" />
+    <title>Plataforma de Treinamento SEI Brasiléia · Capacitação em SEI</title>
+    <script>
+      /* Aplica o tema antes da primeira pintura, evitando tela clara
+         piscando para quem prefere o modo noturno. */
+      (function () {
+        try {
+          var stored = localStorage.getItem('tseibra:tema');
+          var mode = stored === 'claro' || stored === 'escuro' ? stored : 'sistema';
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var theme = mode === 'sistema' ? (prefersDark ? 'escuro' : 'claro') : mode;
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+          if (theme === 'escuro') {
+            document.querySelector('meta[name="theme-color"]').content = '#0e1621';
+          }
+        } catch (e) {
+          document.documentElement.dataset.theme = 'claro';
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

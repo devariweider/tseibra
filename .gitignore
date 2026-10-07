@@ -1,0 +1,30 @@
+# Dependências
+node_modules/
+.pnp
+.pnp.js
+
+# Build
+dist/
+build/
+*.tsbuildinfo
+
+# Dados locais (banco SQLite)
+server/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Ambiente
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editores e SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

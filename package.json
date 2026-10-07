@@ -1,0 +1,26 @@
+{
+  "name": "tseibra-plataforma",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Plataforma de estudo e treinamento SEI! Administrar / Processo Eletrônico Nacional",
+  "type": "module",
+  "workspaces": [
+    "content",
+    "server",
+    "web"
+  ],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "dev": "npm run build -w @tseibra/content && node scripts/dev.mjs",
+    "dev:server": "npm run dev --workspace server",
+    "dev:web": "npm run dev --workspace web",
+    "build": "npm run build -w @tseibra/content && npm run build -w web",
+    "start": "npm run start --workspace server",
+    "seed": "npm run seed --workspace server",
+    "typecheck": "npm run typecheck -w @tseibra/content && npm run typecheck -w server && npm run typecheck -w web",
+    "test": "npm run test --workspace server",
+    "check:contrast": "npm run check:contrast -w web"
+  }
+}
