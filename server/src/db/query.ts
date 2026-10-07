@@ -57,30 +57,36 @@ export class Db {
   }
 
   /**
-   * Executa `fn` dentro de uma transação. Sem um provedor de sessão dedicado
-   * (caso do PGlite, que já é single-connection) usa BEGIN/COMMIT na sessão.
+   * Executa `fn` em uma transação.
+   *
+   * `fn` recebe um `Db` vinculado à **mesma** sessão da transação. Sem isso,
+   * os comandos de `fn` sairiam pelo pool em outra conexão e o BEGIN/COMMIT
+   * não envolveria nada.
    */
-  async transaction<T>(fn: () => Promise<T>): Promise<T> {
+  async transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T> {
     if (!this.acquire) {
-      await this.session.query('BEGIN', []);
+      // PGlite: conexão única, BEGIN/COMMIT na própria sessão.
+      const tx = new Db(this.session);
+      await tx.run('BEGIN');
       try {
-        const result = await fn();
-        await this.session.query('COMMIT', []);
+        const result = await fn(tx);
+        await tx.run('COMMIT');
         return result;
       } catch (error) {
-        await this.session.query('ROLLBACK', []).catch(() => undefined);
+        await tx.run('ROLLBACK').catch(() => undefined);
         throw error;
       }
     }
 
     const client = await this.acquire();
+    const tx = new Db(client);
     try {
-      await client.query('BEGIN', []);
-      const result = await fn();
-      await client.query('COMMIT', []);
+      await tx.run('BEGIN');
+      const result = await fn(tx);
+      await tx.run('COMMIT');
       return result;
     } catch (error) {
-      await client.query('ROLLBACK', []).catch(() => undefined);
+      await tx.run('ROLLBACK').catch(() => undefined);
       throw error;
     } finally {
       client.release();

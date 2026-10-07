@@ -82,11 +82,29 @@ export function setDbForTesting(instance: Db | null): void {
 
 /**
  * TLS é obrigatório em provedores gerenciados (Supabase, Neon, Vercel).
- * Só desligamos se a URL pedir explicitamente `sslmode=disable`; do contrário
- * `pg` não negociaria TLS e a conexão seria recusada.
+ *
+ * Atenção: o `sslmode` presente na URL **tem precedência** sobre a opção
+ * `ssl` do pool no node-postgres. Com `sslmode=require`, o driver ativa a
+ * verificação do certificado e a conexão falha com `SELF_SIGNED_CERT_IN_CHAIN`
+ * — a Supabase usa uma CA que não está na cadeia padrão do Node.
+ *
+ * Por isso removemos o `sslmode` da URL e passamos a opção `ssl`
+ * explicitamente, com `rejectUnauthorized: false`.
  */
 function shouldUseSsl(url: string): boolean {
   return !/sslmode=disable/i.test(url);
+}
+
+/** Remove `sslmode` da conexão para que a opção `ssl` do pool seja respeitada. */
+export function stripSslMode(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.searchParams.has('sslmode')) return url;
+    parsed.searchParams.delete('sslmode');
+    return parsed.toString();
+  } catch {
+    return url;
+  }
 }
 
 export function getDb(): Db {
@@ -94,7 +112,7 @@ export function getDb(): Db {
   if (db) return db;
 
   pool = new pg.Pool({
-    connectionString: env.databaseUrl,
+    connectionString: stripSslMode(env.databaseUrl),
     ssl: shouldUseSsl(env.databaseUrl) ? { rejectUnauthorized: false } : undefined,
     max: env.isProduction ? 5 : 10,
     idleTimeoutMillis: 30_000,

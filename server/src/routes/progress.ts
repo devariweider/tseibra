@@ -151,8 +151,8 @@ progressRouter.post(
     const now = new Date().toISOString();
     const passed = graded.score >= PASS_THRESHOLD;
 
-    await db.transaction(async () => {
-      await db.run(
+    await db.transaction(async (tx) => {
+      await tx.run(
         `INSERT INTO quiz_attempts (id, user_id, lesson_id, score, total, answers, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         randomUUID(),
@@ -164,7 +164,7 @@ progressRouter.post(
         now,
       );
 
-      await db.run(
+      await tx.run(
         `INSERT INTO lesson_progress
            (user_id, lesson_id, status, best_score, attempts_count, last_score, started_at, completed_at, updated_at)
          VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
