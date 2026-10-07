@@ -80,16 +80,22 @@ export function setDbForTesting(instance: Db | null): void {
   override = instance;
 }
 
+/**
+ * TLS é obrigatório em provedores gerenciados (Supabase, Neon, Vercel).
+ * Só desligamos se a URL pedir explicitamente `sslmode=disable`; do contrário
+ * `pg` não negociaria TLS e a conexão seria recusada.
+ */
+function shouldUseSsl(url: string): boolean {
+  return !/sslmode=disable/i.test(url);
+}
+
 export function getDb(): Db {
   if (override) return override;
   if (db) return db;
 
   pool = new pg.Pool({
     connectionString: env.databaseUrl,
-    // Neon/Vercel exigem TLS e pooling no modo serverless.
-    ssl: env.databaseUrl.includes('sslmode=require') || env.databaseUrl.endsWith('neon.tech')
-      ? { rejectUnauthorized: false }
-      : undefined,
+    ssl: shouldUseSsl(env.databaseUrl) ? { rejectUnauthorized: false } : undefined,
     max: env.isProduction ? 5 : 10,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
