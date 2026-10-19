@@ -6,6 +6,13 @@ set -euo pipefail
 
 echo "[setup] configurando ambiente de desenvolvimento…"
 
+# --- 0. Instalar cliente PostgreSQL (psql / createdb) -----------------------
+if ! command -v psql >/dev/null 2>&1; then
+  echo "[setup] instalando postgresql-client…"
+  apt-get update -qq && apt-get install -y -qq postgresql-client >/dev/null 2>&1
+  echo "[setup] postgresql-client instalado."
+fi
+
 # --- 1. Variáveis de ambiente ----------------------------------------------
 if [ ! -f .env ]; then
   cat > .env <<'EOF'
