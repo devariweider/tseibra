@@ -137,42 +137,6 @@ Menor contraste: 4.62:1 (claro · texto sutil)
 ```
 
 O script sai com código 1 se algum par ficar abaixo do mínimo, servindo de gate em CI.
-## Deploy na Vercel
-
-A aplicação é publicada na Vercel como **SPA + função serverless** sobre PostgreSQL.
-
-```
-├── api/[...path].ts      função serverless: captura /api/*
-├── api/index.ts          função serverless: /api sem subpath
-├── vercel.json           build, outputDirectory e rewrite de rotas da SPA
-└── server/src/           o app Express compartilhado com o front
-```
-
-- `outputDirectory: web/dist` — o front é servido pela CDN da Vercel.
-- `rewrites` envia qualquer rota que não seja `/api` para `index.html`, para
-  o React Router funcionar em rotas profundas (`/modulos`, `/aula/:id`).
-- `server/src/vercel-handler.ts` cria o app Express **uma vez por instância**
-  e o reaproveita entre invocações (warm start), evitando recriar o pool a cada requisição.
-- O schema e as contas padrão são criados na **primeira requisição**
-  (`ready()`), já que em serverless não existe "boot".
-
-### Por que PostgreSQL e não SQLite
-
-Funções serverless têm sistema de arquivos efêmero: um arquivo `.sqlite` seria
-perdido a cada invocação. O Postgres é gerenciado pela própria Vercel
-(Neon) e recebe as variáveis `POSTGRES_PRISMA_URL` / `POSTGRES_URL_NON_POOLING`
-automaticamente.
-
-### O que foi adapted na migração
-
-| Antes (SQLite) | Agora (PostgreSQL) |
-| --- | --- |
-| `node:sqlite` (síncrono) | `pg` (assíncrono) — handlers Express agora usam `asyncHandler` |
-| placeholders `?` | convertidos para `$1…` dentro de `db/query.ts` (rotas inalteradas) |
-| `active INTEGER` (0/1) | `active BOOLEAN` |
-| `PRAGMA journal_mode` | removido (o pool já gerencia concorrência) |
-
-Nenhuma rota mudou de SQL: o wrapper `Db` continua expondo `get`/`all`/`run`/`transaction`.
 
 ### Testes
 
@@ -262,15 +226,51 @@ serve a aplicação inteira.
 Navegação por teclado, foco visível (o anel de foco ganha contraste em cada tema), `aria-*` nos componentes
 interativos, contraste medido por script, suporte a `prefers-reduced-motion` e layout do celular ao desktop.
 
-## Deploy
+## Rodando direto pelo GitHub (GitHub Codespaces)
 
-Conectado ao GitHub: cada git push em `main` publica automaticamente em
-<https://tseibra-plataforma.vercel.app>. Branches e pull requests recebem URL
-de preview próprio.
+Você não precisa instalar nada localmente. Abra o repositório no GitHub e
+clique em **Code → Codespaces → Create codespace on main**.
 
-Comandos habituais:
+O ambiente é provisionado automaticamente com:
 
-- `npm run dev` — API (:4000) + front (:5173) com recarga automática
-- `npm test` — 60 testes (conteúdo, cripto e integração da API)
-- `npm run typecheck` — verificação de tipos nos três pacotes
-- `npm run check:contrast` — contraste WCAG dos dois temas
+- **Node.js 24**
+- **PostgreSQL 16** (serviço separado via Docker Compose)
+- Portas expostas: `4000` (API), `5173` (front), `5432` (banco)
+
+Após a criação, o script `.devcontainer/setup.sh` instala as dependências,
+cria o banco `tseibra`, builda o conteúdo e popula as contas padrão. Quando
+terminar, rode `npm run dev` no terminal e abra a porta **5173** no Codespaces.
+
+Link direto para criar o codespace:
+<https://github.com/codespaces/new?hide_repo_select=true&ref=main&repo=devariweider/tseibra>
+
+### Contas criadas no primeiro boot
+
+| Perfil | E-mail | Senha |
+| --- | --- | --- |
+| Aluno | `aluno@tseibra.local` | `Aluno@123` |
+| Instrutor | `instrutor@tseibra.local` | `Admin@123` |
+| Administrador | `admin@tseibra.local` | `Admin@123` |
+
+> Troque `SEED_ADMIN_PASSWORD` / `SEED_ALUNO_PASSWORD` e `JWT_SECRET` antes de
+> qualquer uso real. As credenciais não são exibidas na tela de login — ficam
+> apenas nesta documentação.
+
+### Outros comandos
+
+```bash
+npm run dev        # sobe API (:4000) + front (:5173) com recarga automática
+npm run seed       # recria apenas as contas padrão
+npm test           # 35 testes (conteúdo, cripto e integração da API)
+npm run typecheck  # verificação de tipos nos três pacotes
+npm run check:contrast  # contraste WCAG dos pares de cor dos dois temas
+```
+
+---
+
+## Deploy na Vercel (opcional, produção)
+
+Se quiser publicar na Vercel, reconecte o repositório e defina as variáveis de
+ambiente `DATABASE_URL` e `JWT_SECRET`. O banco Supabase anteriormente
+vinculado ao projeto está suspenso; será necessário criar um Postgres novo
+(Neon/Supabase) e informar a URL nas configurações da Vercel.
