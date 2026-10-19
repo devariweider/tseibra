@@ -1,9 +1,8 @@
 {
   "name": "TSEIBRA — Plataforma SEI (Codespaces)",
-  "image": "mcr.microsoft.com/devcontainers/javascript-node:24",
-  "features": {
-    "postgresql": "latest"
-  },
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/tseibra",
   "forwardPorts": [4000, 5173, 5432],
   "postCreateCommand": "bash .devcontainer/setup.sh",
   "customizations": {
