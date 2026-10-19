@@ -31,6 +31,21 @@ npm run dev          # sobe API (:4000) + front (:5173) juntos
 
 Acesse <http://localhost:5173>.
 
+## Rodando direto do GitHub (GitHub Codespaces)
+
+Você não precisa instalar nada localmente. No GitHub, abra o repositório
+e clique em **Code → Codespaces → Create codespace on main**. O ambiente
+é provisionado automaticamente com:
+
+- **Node.js 24**
+- **PostgreSQL 16** (porta 5432)
+- Portas já expostas: `4000` (API), `5173` (front), `5432` (banco)
+
+Após a criação, o script `.devcontainer/setup.sh` instala as dependências,
+cria o banco `tseibra`, faz o build do conteúdo e popula as contas padrão.
+Quando terminar, abra a porta **5173** (o Codespaces avisa na interface) e
+acesse a aplicação.
+
 ### Contas criadas no primeiro boot
 
 | Perfil | E-mail | Senha |
